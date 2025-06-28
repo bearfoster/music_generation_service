@@ -1,0 +1,16 @@
+# music_generation_service/requirements.txt
+
+# Web framework for building APIs
+fastapi>=0.111.0,<0.112.0
+
+# ASGI server to run FastAPI applications
+uvicorn[standard]>=0.30.0,<0.31.0
+
+# Data validation and parsing (FastAPI dependency, explicitly listed for clarity)
+pydantic>=2.7.0,<2.8.0
+
+# Model Context Protocol server implementation
+fastapi-mcp>=0.1.8,<0.2.0 # Pinned to 0.1.8 as per our working version
+
+# For making HTTP requests (e.g., to a real Beatoven.ai API, currently simulated)
+requests>=2.31.0,<2.32.0
