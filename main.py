@@ -9,11 +9,7 @@ import time
 import asyncio
 from fastapi import FastAPI, HTTPException, BackgroundTasks, status
 from pydantic import BaseModel, Field
-from typing import Literal, Dict, Any, Optional
-
-# Corrected Import for fastapi-mcp v0.1.8
-from fastapi_mcp.server import add_mcp_server
-from mcp.server.fastmcp import FastMCP # Need to import FastMCP for type hinting
+from typing import Literal, Dict, Any, Optional, Callable, Type
 
 # Initialize the FastAPI application
 app = FastAPI(
@@ -25,7 +21,37 @@ app = FastAPI(
 # In-memory store to simulate Beatoven.ai task statuses and results.
 mock_beatoven_tasks: Dict[str, Dict[str, Any]] = {}
 
-# --- Pydantic Models for MCP Tools ---
+# --- Tool Registry Pattern ---
+TOOLS = {}
+
+def register_tool(name: str, input_model: Type[BaseModel], output_model: Type[BaseModel], description: str):
+    def decorator(func: Callable):
+        TOOLS[name] = {
+            "name": name,
+            "description": description,
+            "input_schema": input_model.schema(),
+            "output_schema": output_model.schema(),
+            "function": func
+        }
+        return func
+    return decorator
+
+@app.get("/tools")
+def list_tools():
+    """
+    Returns a list of available tools and their schemas.
+    """
+    return [
+        {
+            "name": tool["name"],
+            "description": tool["description"],
+            "input_schema": tool["input_schema"],
+            "output_schema": tool["output_schema"]
+        }
+        for tool in TOOLS.values()
+    ]
+
+# --- Pydantic Models for Tool Schemas ---
 
 class InitiateMusicGenerationInput(BaseModel):
     mood: Literal[
@@ -50,13 +76,6 @@ class GetMusicGenerationStatusOutput(BaseModel):
     music_url: Optional[str] = Field(None, description="URL of the generated music, if completed.")
     error: Optional[str] = Field(None, description="Error message, if the task failed.")
 
-# --- MCP Server Initialization ---
-mcp_server: FastMCP = add_mcp_server(
-    app=app,
-    name="Music Generation Agent",
-    description="Generates music based on a given mood using a simulated Beatoven.ai API.",
-)
-
 # --- Simulated Beatoven.ai Background Task ---
 
 async def simulate_music_generation(task_id: str, mood: str, duration: int):
@@ -73,6 +92,12 @@ async def simulate_music_generation(task_id: str, mood: str, duration: int):
 
 # --- Define the FastAPI routes that implement the tool logic ---
 
+@register_tool(
+    name="initiate_music_generation",
+    input_model=InitiateMusicGenerationInput,
+    output_model=InitiateMusicGenerationOutput,
+    description="Initiates a simulated music generation task for a given mood and duration. Returns a unique task ID."
+)
 @app.post("/initiate_music_generation/", response_model=InitiateMusicGenerationOutput, status_code=status.HTTP_200_OK)
 async def initiate_music_generation_route(
     input_data: InitiateMusicGenerationInput,
@@ -98,6 +123,12 @@ async def initiate_music_generation_route(
 
     return InitiateMusicGenerationOutput(task_id=task_id)
 
+@register_tool(
+    name="get_music_generation_status",
+    input_model=GetMusicGenerationStatusInput,
+    output_model=GetMusicGenerationStatusOutput,
+    description="Retrieves the status and result of a music generation task by its task ID."
+)
 @app.post("/get_music_generation_status/", response_model=GetMusicGenerationStatusOutput, status_code=status.HTTP_200_OK)
 async def get_music_generation_status_route(
     input_data: GetMusicGenerationStatusInput
