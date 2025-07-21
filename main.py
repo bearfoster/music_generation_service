@@ -8,28 +8,29 @@ import uuid
 import time
 import asyncio
 import aiohttp
-# Removed: import aiofiles # Not directly used for URL return in this version
 from fastapi import FastAPI, HTTPException, BackgroundTasks, status
 from pydantic import BaseModel, Field
 from typing import Literal, Dict, Any, Optional, Callable, Type
-import json # ADDED: For pretty-printing JSON bodies
+import json
+
+# Import the new mock module
+from mock_beatoven import handle_mock_music_generation # ADDED
 
 # Initialize the FastAPI application
 app = FastAPI(
     title="Music Generation Service",
-    description="Agent for translating a given mood into a generated music composition using Beatoven.ai.",
-    version="0.3.4" # Updated version
+    description="Agent for translating a given mood into a generated music composition using Beatoven.ai, with mocking capability.",
+    version="0.3.6" # Updated version
 )
 
 # In-memory store to track Beatoven.ai task statuses and results.
-# This will now store Beatoven's task_id and status, along with our internal task_id
 mock_beatoven_tasks: Dict[str, Dict[str, Any]] = {}
 
 # --- Beatoven.ai Configuration ---
 BACKEND_V1_API_URL = "https://public-api.beatoven.ai/api/v1"
-# It's best practice to get the API key from environment variables.
-# The user provided it directly in the prompt, so we'll use that as a fallback.
 BEATOVEN_API_KEY = os.getenv("BEATOVEN_API_KEY", "PW9-2-rgHde49gg03xlErA")
+
+# DEFAULT_MOCK_MUSIC_URL is now in mock_beatoven.py # REMOVED
 
 # --- Tool Registry Pattern ---
 TOOLS = {}
@@ -63,15 +64,12 @@ def list_tools():
 # --- Pydantic Models for Tool Schemas ---
 
 class InitiateMusicGenerationInput(BaseModel):
-    mood: Literal[
-        "joyful", "calm", "melancholy", "energetic", "relaxing", "gloomy", "serene", "adventurous", "upbeat",
-        "contemplative", "exhilarated", "peaceful", "frantic", "optimistic", "pensive", "giddy", "tranquil",
-        "reflective", "vibrant", "somber", "eager", "content", "restless", "hopeful", "wistful", "euphoric",
-        "composed", "agitated", "blissful", "apprehensive", "inspired", "nostalgic", "curious", "playful",
-        "solemn", "determined", "bewildered", "grateful", "weary", "proud", "anxious", "elated", "tender",
-        "disturbed", "thoughtful", "excited", "sullen", "reverent", "dreamy", "alert"
-    ] = Field(..., description="The mood for which to generate music.")
+    mood: str = Field(..., description="The mood for which to generate music.")
+    intensity: float = Field(..., ge=0.0, le=1.0, description="Desired intensity of the music (0.0-1.0).")
     duration_seconds: int = Field(..., ge=10, le=300, description="Desired duration of the music in seconds (10-300).")
+    mock_response: bool = Field(False, description="If true, a mock response will be returned instead of calling Beatoven.ai.")
+    mock_music_url: Optional[str] = Field(None, description="Optional URL to use for the mock response. If not provided, a default mock URL will be used.")
+
 
 class InitiateMusicGenerationOutput(BaseModel):
     status: Literal["generation_initiated"] = "generation_initiated"
@@ -184,7 +182,7 @@ async def watch_beatoven_task_status(internal_task_id: str, beatoven_task_id: st
             if current_beatoven_status == "composing":
                 mock_beatoven_tasks[internal_task_id]["status"] = "processing"
                 await asyncio.sleep(interval)
-            elif current_beatoven_status in ["completed", "composed"]: # CHANGED: Added "composed" status
+            elif current_beatoven_status in ["completed", "composed"]:
                 track_url = track_status.get("meta", {}).get("track_url")
                 if track_url:
                     mock_beatoven_tasks[internal_task_id]["status"] = "completed"
@@ -192,7 +190,7 @@ async def watch_beatoven_task_status(internal_task_id: str, beatoven_task_id: st
                     print(f"Music generation completed for internal task_id: {internal_task_id}. URL: {track_url}")
                     return # Exit polling
                 else:
-                    error_msg = "Beatoven.ai reported completed/composed but no track_url found." # CHANGED: Updated message
+                    error_msg = "Beatoven.ai reported completed/composed but no track_url found."
                     mock_beatoven_tasks[internal_task_id]["status"] = "failed"
                     mock_beatoven_tasks[internal_task_id]["error"] = error_msg
                     print(error_msg)
@@ -223,17 +221,17 @@ async def watch_beatoven_task_status(internal_task_id: str, beatoven_task_id: st
 
 # --- Main Background Task for Music Generation ---
 
-async def generate_music_with_beatoven(internal_task_id: str, mood: str, duration: int):
+async def generate_music_with_beatoven(internal_task_id: str, mood: str, duration: int, intensity: float):
     """
     Orchestrates the music generation process with Beatoven.ai.
     """
     print(f"Starting Beatoven.ai integration for internal task_id: {internal_task_id}")
     try:
-        # Construct the text prompt for Beatoven.ai
+        # Construct the text prompt for Beatoven.ai, including intensity in the prompt text
         track_meta = {
-            "prompt": {"text": f"A {mood} music track."},
+            "prompt": {"text": f"A {mood} music track with a mood intensity of {intensity}."},
             "duration": duration,
-            "format": "mp3" # Request MP3 format
+            "format": "mp3",
         } 
 
         # 1. Initiate Composition
@@ -249,7 +247,7 @@ async def generate_music_with_beatoven(internal_task_id: str, mood: str, duratio
     except Exception as e:
         error_msg = f"Failed to initiate or track Beatoven.ai generation for internal task_id {internal_task_id}: {e}"
         mock_beatoven_tasks[internal_task_id]["status"] = "failed"
-        mock_beatoven_tasks[internal_task_id]["error"] = str(e) # Store the exception message
+        mock_beatoven_tasks[internal_task_id]["error"] = str(e)
         print(error_msg)
 
 
@@ -259,7 +257,7 @@ async def generate_music_with_beatoven(internal_task_id: str, mood: str, duratio
     name="initiate_music_generation",
     input_model=InitiateMusicGenerationInput,
     output_model=InitiateMusicGenerationOutput,
-    description="Initiates a music generation task using Beatoven.ai for a given mood and duration. Returns a unique task ID."
+    description="Initiates a music generation task using Beatoven.ai for a given mood and duration. Returns a unique task ID. Can also return a mock response."
 )
 @app.post("/initiate_music_generation/", response_model=InitiateMusicGenerationOutput, status_code=status.HTTP_200_OK)
 async def initiate_music_generation_route(
@@ -267,23 +265,37 @@ async def initiate_music_generation_route(
     background_tasks: BackgroundTasks
 ) -> InitiateMusicGenerationOutput:
     """
-    Initiates a music generation task with Beatoven.ai. A unique task ID is generated and returned.
+    Initiates a music generation task with Beatoven.ai or returns a mock response.
     """
     internal_task_id = str(uuid.uuid4())
-    mock_beatoven_tasks[internal_task_id] = {
-        "status": "processing",
-        "mood": input_data.mood,
-        "duration": input_data.duration_seconds,
-        "music_url": None,
-        "error": None,
-        "start_time": time.time(),
-        "beatoven_task_id": None # To store the Beatoven.ai's task ID
-    }
-    print(f"Initiated music generation task with internal ID: {internal_task_id}")
+    
+    if input_data.mock_response:
+        # Delegate to the mock handler
+        mock_task_id = handle_mock_music_generation(
+            internal_task_id,
+            input_data.mood,
+            input_data.duration_seconds,
+            input_data.intensity,
+            input_data.mock_music_url,
+            mock_beatoven_tasks,
+            BACKEND_V1_API_URL # Pass the base URL for logging the mock request
+        )
+    else:
+        # Handle real Beatoven.ai call
+        mock_beatoven_tasks[internal_task_id] = {
+            "status": "processing",
+            "mood": input_data.mood,
+            "duration": input_data.duration_seconds,
+            "music_url": None,
+            "error": None,
+            "start_time": time.time(),
+            "beatoven_task_id": None # To store the Beatoven.ai's task ID
+        }
+        print(f"Initiated REAL music generation task with internal ID: {internal_task_id}")
 
-    background_tasks.add_task(
-        generate_music_with_beatoven, internal_task_id, input_data.mood, input_data.duration_seconds
-    )
+        background_tasks.add_task(
+            generate_music_with_beatoven, internal_task_id, input_data.mood, input_data.duration_seconds, input_data.intensity
+        )
 
     return InitiateMusicGenerationOutput(task_id=internal_task_id)
 
@@ -299,7 +311,7 @@ async def get_music_generation_status_route(
 ) -> GetMusicGenerationStatusOutput:
     """
     Retrieves the status of a music generation task using its internal task ID.
-    This will now reflect the actual Beatoven.ai status.
+    This will now reflect the actual Beatoven.ai status or the mock status.
     """
     internal_task_id = input_data.task_id
     task_info = mock_beatoven_tasks.get(internal_task_id)
