@@ -20,7 +20,7 @@ from mock_beatoven import handle_mock_music_generation # ADDED
 app = FastAPI(
     title="Music Generation Service",
     description="Agent for translating a given mood into a generated music composition using Beatoven.ai, with mocking capability.",
-    version="0.3.6" # Updated version
+    version="0.3.7" # Updated version
 )
 
 # In-memory store to track Beatoven.ai task statuses and results.
@@ -29,8 +29,6 @@ mock_beatoven_tasks: Dict[str, Dict[str, Any]] = {}
 # --- Beatoven.ai Configuration ---
 BACKEND_V1_API_URL = "https://public-api.beatoven.ai/api/v1"
 BEATOVEN_API_KEY = os.getenv("BEATOVEN_API_KEY", "PW9-2-rgHde49gg03xlErA")
-
-# DEFAULT_MOCK_MUSIC_URL is now in mock_beatoven.py # REMOVED
 
 # --- Tool Registry Pattern ---
 TOOLS = {}
@@ -66,6 +64,7 @@ def list_tools():
 class InitiateMusicGenerationInput(BaseModel):
     mood: str = Field(..., description="The mood for which to generate music.")
     intensity: float = Field(..., ge=0.0, le=1.0, description="Desired intensity of the music (0.0-1.0).")
+    theme: Optional[str] = Field(None, description="Optional theme for the music, influencing style (e.g., psychedelic, synthwave, serene).") # ADDED: Theme field
     duration_seconds: int = Field(..., ge=10, le=300, description="Desired duration of the music in seconds (10-300).")
     mock_response: bool = Field(False, description="If true, a mock response will be returned instead of calling Beatoven.ai.")
     mock_music_url: Optional[str] = Field(None, description="Optional URL to use for the mock response. If not provided, a default mock URL will be used.")
@@ -221,15 +220,19 @@ async def watch_beatoven_task_status(internal_task_id: str, beatoven_task_id: st
 
 # --- Main Background Task for Music Generation ---
 
-async def generate_music_with_beatoven(internal_task_id: str, mood: str, duration: int, intensity: float):
+async def generate_music_with_beatoven(internal_task_id: str, mood: str, duration: int, intensity: float, theme: Optional[str]): # CHANGED: Added theme parameter
     """
     Orchestrates the music generation process with Beatoven.ai.
     """
     print(f"Starting Beatoven.ai integration for internal task_id: {internal_task_id}")
     try:
-        # Construct the text prompt for Beatoven.ai, including intensity in the prompt text
+        # Construct the text prompt for Beatoven.ai, including intensity and theme in the prompt text
+        prompt_text = f"A {mood} music track with a mood intensity of {intensity}."
+        if theme:
+            prompt_text += f" In a {theme} style."
+
         track_meta = {
-            "prompt": {"text": f"A {mood} music track with a mood intensity of {intensity}."},
+            "prompt": {"text": prompt_text}, # CHANGED: Use constructed prompt_text
             "duration": duration,
             "format": "mp3",
         } 
@@ -278,7 +281,8 @@ async def initiate_music_generation_route(
             input_data.intensity,
             input_data.mock_music_url,
             mock_beatoven_tasks,
-            BACKEND_V1_API_URL # Pass the base URL for logging the mock request
+            BACKEND_V1_API_URL, # Pass the base URL for logging the mock request
+            input_data.theme # CHANGED: Pass theme to mock handler
         )
     else:
         # Handle real Beatoven.ai call
@@ -294,7 +298,7 @@ async def initiate_music_generation_route(
         print(f"Initiated REAL music generation task with internal ID: {internal_task_id}")
 
         background_tasks.add_task(
-            generate_music_with_beatoven, internal_task_id, input_data.mood, input_data.duration_seconds, input_data.intensity
+            generate_music_with_beatoven, internal_task_id, input_data.mood, input_data.duration_seconds, input_data.intensity, input_data.theme # CHANGED: Pass theme
         )
 
     return InitiateMusicGenerationOutput(task_id=internal_task_id)
